@@ -1,14 +1,32 @@
-import os, random, subprocess, asyncio
+import os, random, subprocess, asyncio, requests
 from flask import Flask, request, send_file, jsonify
 import edge_tts
 
 app = Flask(__name__)
 
-SEARCH_QUERIES = [
-    "ytsearch15:GTA 5 insane stunt fail clip",
-    "ytsearch15:GTA online funny moments fail clip",
-    "ytsearch15:GTA 5 thug life stunt clip"
-]
+def get_gta_clip_url():
+    r = requests.get(
+        "https://archive.org/advancedsearch.php",
+        params={
+            "q": "GTA V gameplay OR GTA 5 stunts AND mediatype:movies",
+            "fl[]": "identifier",
+            "rows": 30,
+            "page": 1,
+            "output": "json"
+        },
+        timeout=15
+    )
+    docs = r.json().get("response", {}).get("docs", [])
+    random.shuffle(docs)
+    for doc in docs:
+        ident = doc["identifier"]
+        meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=15).json()
+        for f in meta.get("files", []):
+            name = f.get("name", "")
+            size = int(f.get("size", 0) or 0)
+            if name.endswith(".mp4") and 1_000_000 < size < 40_000_000:
+                return f"https://archive.org/download/{ident}/{name}"
+    raise RuntimeError("Geen geschikte MP4-clip gevonden")
 
 async def make_tts(text, out_path):
     communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural", rate="+10%")
@@ -24,30 +42,29 @@ def render_short():
             if os.path.exists(f):
                 os.remove(f)
 
-        query = random.choice(SEARCH_QUERIES)
-        idx = random.randint(1, 15)
-        subprocess.run([
-            "yt-dlp",
-            "--playlist-items", str(idx),
-            "--match-filter", "duration < 60",
-            "-f", "best[ext=mp4][height<=1080]/best[ext=mp4]/best",
-            "-o", "raw.mp4",
-            query
-        ], check=True)
+        clip_url = get_gta_clip_url()
+        with requests.get(clip_url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open("raw.mp4", "wb") as out:
+                for chunk in r.iter_content(chunk_size=65536):
+                    out.write(chunk)
 
         asyncio.run(make_tts(voiceover_text, "voice.mp3"))
 
+        # 720x1280 (9:16) met 1 thread zodat het binnen Render's gratis 512MB RAM blijft
         vf = (
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:10[bg];"
-            "[0:v]scale=1080:-2[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2,eq=contrast=1.05:saturation=1.1[outv]"
+            "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,boxblur=15:5[bg];"
+            "[0:v]scale=720:-2[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[outv]"
         )
         cmd = [
-            "ffmpeg", "-y", "-i", "raw.mp4", "-i", "voice.mp3",
+            "ffmpeg", "-y", "-threads", "1",
+            "-ss", "0", "-t", "25", "-i", "raw.mp4",
+            "-i", "voice.mp3",
             "-filter_complex", vf,
             "-map", "[outv]", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-            "-c:a", "aac", "-shortest", "-t", "58", "final.mp4"
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-c:a", "aac", "-shortest", "final.mp4"
         ]
         subprocess.run(cmd, check=True)
         return send_file("final.mp4", mimetype="video/mp4")
