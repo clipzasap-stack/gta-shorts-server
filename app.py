@@ -1,6 +1,7 @@
 import os, random, subprocess, asyncio, requests
 from flask import Flask, request, send_file, jsonify
 import edge_tts
+from gtts import gTTS
 
 app = Flask(__name__)
 
@@ -8,9 +9,9 @@ def get_gta_clip_url():
     r = requests.get(
         "https://archive.org/advancedsearch.php",
         params={
-            "q": "GTA V gameplay OR GTA 5 stunts AND mediatype:movies",
+            "q": 'title:"Grand Theft Auto" AND mediatype:movies',
             "fl[]": "identifier",
-            "rows": 30,
+            "rows": 40,
             "page": 1,
             "output": "json"
         },
@@ -26,17 +27,30 @@ def get_gta_clip_url():
             size = int(f.get("size", 0) or 0)
             if name.endswith(".mp4") and 1_000_000 < size < 40_000_000:
                 return f"https://archive.org/download/{ident}/{name}"
-    raise RuntimeError("Geen geschikte MP4-clip gevonden")
+    raise RuntimeError("Geen geschikte GTA MP4-clip gevonden")
 
-async def make_tts(text, out_path):
+async def make_edge_tts(text, out_path):
     communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural", rate="+10%")
     await communicate.save(out_path)
+
+def generate_voiceover(text, out_path):
+    clean_text = (text or "").strip()
+    if len(clean_text) < 3:
+        clean_text = "No way! Look at this insane Grand Theft Auto stunt!"
+    try:
+        asyncio.run(make_edge_tts(clean_text, out_path))
+    except Exception:
+        pass
+    # Fallback naar gTTS als edge-tts een leeg/corrupt bestand oplevert
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+        tts = gTTS(text=clean_text, lang="en", tld="com")
+        tts.save(out_path)
 
 @app.route("/render", methods=["POST"])
 def render_short():
     try:
-        data = request.get_json(force=True)
-        voiceover_text = data.get("voiceover_text", "Watch this insane GTA stunt!")
+        data = request.get_json(force=True, silent=True) or {}
+        voiceover_text = data.get("voiceover_text", "")
 
         for f in ["raw.mp4", "voice.mp3", "final.mp4"]:
             if os.path.exists(f):
@@ -49,9 +63,8 @@ def render_short():
                 for chunk in r.iter_content(chunk_size=65536):
                     out.write(chunk)
 
-        asyncio.run(make_tts(voiceover_text, "voice.mp3"))
+        generate_voiceover(voiceover_text, "voice.mp3")
 
-        # 720x1280 (9:16) met 1 thread zodat het binnen Render's gratis 512MB RAM blijft
         vf = (
             "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,boxblur=15:5[bg];"
             "[0:v]scale=720:-2[fg];"
