@@ -7,32 +7,33 @@ app = Flask(__name__)
 
 def get_gta_clip_url():
     queries = [
-        'subject:"Grand Theft Auto V" AND mediatype:movies',
-        'title:"GTA 5" AND gameplay AND mediatype:movies',
-        'title:"GTA V" AND stunts AND mediatype:movies'
+        '("GTA 6" OR "GTA VI" OR "Grand Theft Auto VI") AND (fail OR fails OR bug OR glitch OR funny) AND mediatype:movies',
+        '("GTA 6" OR "GTA VI" OR "Grand Theft Auto 6") AND mediatype:movies',
+        '("GTA 5" OR "Grand Theft Auto V") AND (fail OR fails OR glitch) AND mediatype:movies'
     ]
-    r = requests.get(
-        "https://archive.org/advancedsearch.php",
-        params={
-            "q": random.choice(queries),
-            "fl[]": "identifier",
-            "rows": 40,
-            "page": 1,
-            "output": "json"
-        },
-        timeout=15
-    )
-    docs = r.json().get("response", {}).get("docs", [])
-    random.shuffle(docs)
-    for doc in docs:
-        ident = doc["identifier"]
-        meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=15).json()
-        for f in meta.get("files", []):
-            name = f.get("name", "")
-            size = int(f.get("size", 0) or 0)
-            if name.endswith(".mp4") and 3_000_000 < size < 60_000_000:
-                return f"https://archive.org/download/{ident}/{name}"
-    raise RuntimeError("Geen geschikte GTA gameplay MP4 gevonden")
+    for q in queries:
+        r = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": q,
+                "fl[]": "identifier",
+                "rows": 40,
+                "page": 1,
+                "output": "json"
+            },
+            timeout=15
+        )
+        docs = r.json().get("response", {}).get("docs", [])
+        random.shuffle(docs)
+        for doc in docs:
+            ident = doc["identifier"]
+            meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=15).json()
+            for f in meta.get("files", []):
+                name = f.get("name", "")
+                size = int(f.get("size", 0) or 0)
+                if name.endswith(".mp4") and 3_000_000 < size < 65_000_000:
+                    return f"https://archive.org/download/{ident}/{name}"
+    raise RuntimeError("Geen geschikte GTA MP4 gevonden")
 
 def get_duration(path):
     out = subprocess.check_output([
@@ -42,20 +43,25 @@ def get_duration(path):
     return float(out)
 
 async def make_edge_tts(text, out_path):
-    communicate = edge_tts.Communicate(text, "en-US-GuyNeural", rate="+15%")
+    communicate = edge_tts.Communicate(text, "en-US-GuyNeural", rate="+10%")
     await communicate.save(out_path)
 
-def generate_voiceover(text, out_path):
-    clean_text = (text or "").strip().replace('"', '').replace("'", "")
-    if len(clean_text) < 10:
-        clean_text = "No way! Watch what happens when this driver tries the craziest stunt in Los Santos without hitting the brakes!"
+def generate_voiceover(extra_text, out_path):
+    hook = "Imagine waiting all these years just for this to happen."
+    clean_extra = (extra_text or "").strip().replace('"', '').replace("'", "")
+    if clean_extra.lower().startswith("imagine waiting all these years"):
+        full_text = clean_extra
+    elif len(clean_extra) > 5:
+        full_text = f"{hook} {clean_extra}"
+    else:
+        full_text = f"{hook} Watch how completely broken this physics glitch gets right before the crash!"
     try:
-        asyncio.run(make_edge_tts(clean_text, out_path))
+        asyncio.run(make_edge_tts(full_text, out_path))
     except Exception:
         pass
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-        gTTS(text=clean_text, lang="en", tld="com").save(out_path)
-    return clean_text
+        gTTS(text=full_text, lang="en", tld="com").save(out_path)
+    return full_text
 
 def format_srt_time(seconds):
     hrs = int(seconds // 3600)
@@ -64,17 +70,18 @@ def format_srt_time(seconds):
     ms = int((seconds - int(seconds)) * 1000)
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{ms:03d}"
 
-def build_srt(text, total_dur, srt_path):
+def build_tv_srt(text, speech_dur, srt_path):
+    # TV-stijl: rustige zinsdelen van max ~7 woorden onderaan het scherm
     words = text.split()
-    chunks = [" ".join(words[i:i+4]).upper() for i in range(0, len(words), 4)]
+    chunks = [" ".join(words[i:i+7]) for i in range(0, len(words), 7)]
     if not chunks:
-        chunks = ["CRAZY GTA STUNT!"]
-    step = total_dur / len(chunks)
+        chunks = ["Imagine waiting all these years just for this to happen."]
+    step = speech_dur / len(chunks)
     lines = []
     for idx, chunk in enumerate(chunks):
         start = format_srt_time(idx * step)
         end = format_srt_time((idx + 1) * step)
-        wrapped = "\n".join(textwrap.wrap(chunk, width=18))
+        wrapped = "\n".join(textwrap.wrap(chunk, width=34))
         lines.append(f"{idx+1}\n{start} --> {end}\n{wrapped}\n")
     with open(srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -96,34 +103,35 @@ def render_short():
                 for chunk in r.iter_content(chunk_size=65536):
                     out.write(chunk)
 
-        clean_text = generate_voiceover(raw_text, "voice.mp3")
-        voice_dur = max(12.0, min(get_duration("voice.mp3") + 1.0, 45.0))
+        full_text = generate_voiceover(raw_text, "voice.mp3")
+        voice_dur = get_duration("voice.mp3")
+        target_dur = 20.0
         vid_dur = get_duration("raw.mp4")
 
-        # Spring naar een spannend stuk midden in de video in plaats van het saaie intro
         start_sec = 0.0
-        if vid_dur > voice_dur + 15:
-            start_sec = random.uniform(vid_dur * 0.25, vid_dur - voice_dur - 5)
+        if vid_dur > target_dur + 15:
+            start_sec = random.uniform(vid_dur * 0.20, vid_dur - target_dur - 5)
 
-        build_srt(clean_text, voice_dur, "subs.srt")
+        build_tv_srt(full_text, min(voice_dur, target_dur), "subs.srt")
 
+        # Klassieke TV-ondertiteling: FontSize 11, wit (&H00FFFFFF), zwarte achtergrondbalk (BorderStyle=3), onderaan met marge (MarginV=35)
         vf = (
             "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,boxblur=15:5[bg];"
             "[0:v]scale=720:-2[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
-            "subtitles=subs.srt:force_style='FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=10'[outv]"
+            "subtitles=subs.srt:force_style='FontName=DejaVu Sans,FontSize=11,Bold=0,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=38'[outv]"
         )
-        # Mix originele game-audio (35%) met AI-stem (100%)
-        af = "[0:a]volume=0.35[bg_a];[1:a]volume=1.2[fg_a];[bg_a][fg_a]amix=inputs=2:duration=shortest[outa]"
+        # Gebruik apad zodat de clip altijd 20 sec doorloopt, ook als de stem na 10 sec stopt
+        af = "[0:a]volume=0.45[bg_a];[1:a]apad,volume=1.2[fg_a];[bg_a][fg_a]amix=inputs=2:duration=first[outa]"
 
         cmd = [
             "ffmpeg", "-y", "-threads", "1",
-            "-ss", f"{start_sec:.2f}", "-t", f"{voice_dur:.2f}", "-i", "raw.mp4",
+            "-ss", f"{start_sec:.2f}", "-t", f"{target_dur:.2f}", "-i", "raw.mp4",
             "-i", "voice.mp3",
             "-filter_complex", f"{vf};{af}",
             "-map", "[outv]", "-map", "[outa]",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
-            "-c:a", "aac", "-t", f"{voice_dur:.2f}", "final.mp4"
+            "-c:a", "aac", "-t", f"{target_dur:.2f}", "final.mp4"
         ]
         subprocess.run(cmd, check=True)
         return send_file("final.mp4", mimetype="video/mp4")
