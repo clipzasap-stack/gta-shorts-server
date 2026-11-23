@@ -12,28 +12,31 @@ def get_gta_clip_url():
         '("GTA 5" OR "Grand Theft Auto V") AND (fail OR fails OR glitch) AND mediatype:movies'
     ]
     for q in queries:
-        r = requests.get(
-            "https://archive.org/advancedsearch.php",
-            params={
-                "q": q,
-                "fl[]": "identifier",
-                "rows": 40,
-                "page": 1,
-                "output": "json"
-            },
-            timeout=15
-        )
-        docs = r.json().get("response", {}).get("docs", [])
-        random.shuffle(docs)
-        for doc in docs:
-            ident = doc["identifier"]
-            meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=15).json()
-            for f in meta.get("files", []):
-                name = f.get("name", "")
-                size = int(f.get("size", 0) or 0)
-                if name.endswith(".mp4") and 3_000_000 < size < 65_000_000:
-                    return f"https://archive.org/download/{ident}/{name}"
-    raise RuntimeError("Geen geschikte GTA MP4 gevonden")
+        try:
+            r = requests.get(
+                "https://archive.org/advancedsearch.php",
+                params={
+                    "q": q,
+                    "fl[]": "identifier",
+                    "rows": 30,
+                    "page": 1,
+                    "output": "json"
+                },
+                timeout=10
+            )
+            docs = r.json().get("response", {}).get("docs", [])
+            random.shuffle(docs)
+            for doc in docs[:10]:
+                ident = doc["identifier"]
+                meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=10).json()
+                for f in meta.get("files", []):
+                    name = f.get("name", "")
+                    size = int(f.get("size", 0) or 0)
+                    if name.endswith(".mp4") and 2_000_000 < size < 25_000_000:
+                        return f"https://archive.org/download/{ident}/{name}"
+        except Exception:
+            continue
+    raise RuntimeError("Geen snelle GTA MP4 gevonden")
 
 def get_duration(path):
     out = subprocess.check_output([
@@ -44,7 +47,7 @@ def get_duration(path):
 
 async def make_edge_tts(text, out_path):
     communicate = edge_tts.Communicate(text, "en-US-GuyNeural", rate="+10%")
-    await communicate.save(out_path)
+    await asyncio.wait_for(communicate.save(out_path), timeout=15.0)
 
 def generate_voiceover(extra_text, out_path):
     hook = "Imagine waiting all these years just for this to happen."
@@ -96,7 +99,7 @@ def render_short():
                 os.remove(f)
 
         clip_url = get_gta_clip_url()
-        with requests.get(clip_url, stream=True, timeout=35) as r:
+        with requests.get(clip_url, stream=True, timeout=20) as r:
             r.raise_for_status()
             with open("raw.mp4", "wb") as out:
                 for chunk in r.iter_content(chunk_size=65536):
@@ -127,11 +130,11 @@ def render_short():
             "-i", "voice.mp3",
             "-filter_complex", f"{vf};{af}",
             "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "veryfast",
+            "-c:v", "libx264", "-preset", "ultrafast",
             "-b:v", "1200k", "-maxrate", "1400k", "-bufsize", "2000k",
             "-c:a", "aac", "-b:a", "96k", "-t", f"{target_dur:.2f}", "final.mp4"
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=60)
         return send_file("final.mp4", mimetype="video/mp4")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
