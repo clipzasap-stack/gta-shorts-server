@@ -71,7 +71,6 @@ def format_srt_time(seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{ms:03d}"
 
 def build_tv_srt(text, speech_dur, srt_path):
-    # TV-stijl: rustige zinsdelen van max ~7 woorden onderaan het scherm
     words = text.split()
     chunks = [" ".join(words[i:i+7]) for i in range(0, len(words), 7)]
     if not chunks:
@@ -114,14 +113,12 @@ def render_short():
 
         build_tv_srt(full_text, min(voice_dur, target_dur), "subs.srt")
 
-        # Klassieke TV-ondertiteling: FontSize 11, wit (&H00FFFFFF), zwarte achtergrondbalk (BorderStyle=3), onderaan met marge (MarginV=35)
         vf = (
             "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,boxblur=15:5[bg];"
             "[0:v]scale=720:-2[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
             "subtitles=subs.srt:force_style='FontName=DejaVu Sans,FontSize=11,Bold=0,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=38'[outv]"
         )
-        # Gebruik apad zodat de clip altijd 20 sec doorloopt, ook als de stem na 10 sec stopt
         af = "[0:a]volume=0.45[bg_a];[1:a]apad,volume=1.2[fg_a];[bg_a][fg_a]amix=inputs=2:duration=first[outa]"
 
         cmd = [
@@ -130,8 +127,9 @@ def render_short():
             "-i", "voice.mp3",
             "-filter_complex", f"{vf};{af}",
             "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
-            "-c:a", "aac", "-t", f"{target_dur:.2f}", "final.mp4"
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-b:v", "1200k", "-maxrate", "1400k", "-bufsize", "2000k",
+            "-c:a", "aac", "-b:a", "96k", "-t", f"{target_dur:.2f}", "final.mp4"
         ]
         subprocess.run(cmd, check=True)
         return send_file("final.mp4", mimetype="video/mp4")
